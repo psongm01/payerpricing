@@ -1,0 +1,23 @@
+# Local data and generated outputs
+data/
+.tmp/
+
+# Local editor/agent state
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime logs and scratch
+*.log
+*.partial
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+
+key-tic-prod.pem
+*.pem

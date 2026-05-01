@@ -1,0 +1,6 @@
+duckdb
+ijson
+pyarrow
+requests
+azure-identity
+azure-storage-blob
