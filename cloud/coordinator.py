@@ -85,6 +85,30 @@ def first_glob(pattern: str) -> str:
     return matches[-1]
 
 
+def upload_month_artifacts(
+    storage: StorageClient,
+    month: str,
+    index_urls: Path,
+    index_manifest: Path,
+    matched_urls: Path,
+    manifest: Path,
+    shards_dir: Path,
+    nppes_out: Path,
+    bridge_out: Path,
+    dry_run: bool,
+) -> None:
+    for artifact in (index_urls, index_manifest, matched_urls, manifest):
+        if not artifact.exists() and dry_run:
+            continue
+        if not artifact.exists():
+            log.info("Skipping missing artifact: %s", artifact)
+            continue
+        storage.upload_file(artifact, f"jobs/{month}/{artifact.name}")
+    storage.upload_prefix(shards_dir, f"jobs/{month}/shards")
+    storage.upload_prefix(nppes_out, f"parquet/{month}/nppes_provider")
+    storage.upload_prefix(bridge_out, f"parquet/{month}/plan_pricing_bridge")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare a monthly UHC Texas refresh job.")
     parser.add_argument("--month", required=True, help="Month partition, e.g. 2026-04")
@@ -110,6 +134,11 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-nppes", action="store_true")
     parser.add_argument("--skip-scan", action="store_true")
+    parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Only upload existing monthly artifacts to storage; do not run discovery, NPPES, scan, or shard generation.",
+    )
     parser.add_argument("--worker-command-template", default=None,
                         help="Optional shell command template to start a worker. Supports {month}, {shard}, {storage_root}.")
     args = parser.parse_args()
@@ -129,6 +158,22 @@ def main() -> None:
     index_manifest = raw_dir / "index_urls_manifest.txt"
     matched_urls = raw_dir / "matched_pricing_urls.txt"
     manifest = raw_dir / "matched_pricing_urls_manifest.txt"
+
+    if args.upload_only:
+        storage = StorageClient(args.storage_root, dry_run=args.dry_run)
+        upload_month_artifacts(
+            storage,
+            args.month,
+            index_urls,
+            index_manifest,
+            matched_urls,
+            manifest,
+            shards_dir,
+            nppes_out,
+            bridge_out,
+            args.dry_run,
+        )
+        return
 
     if not args.skip_index_discovery:
         if not args.uhc_mrf_seed_url:
@@ -216,15 +261,18 @@ def main() -> None:
         write_shards(manifest, shards_dir, args.shards)
 
     storage = StorageClient(args.storage_root, dry_run=args.dry_run)
-    for artifact in (index_urls, index_manifest, matched_urls, manifest):
-        if not artifact.exists() and args.dry_run:
-            continue
-        if not artifact.exists():
-            continue
-        storage.upload_file(artifact, f"jobs/{args.month}/{artifact.name}")
-    storage.upload_prefix(shards_dir, f"jobs/{args.month}/shards")
-    storage.upload_prefix(nppes_out, f"parquet/{args.month}/nppes_provider")
-    storage.upload_prefix(bridge_out, f"parquet/{args.month}/plan_pricing_bridge")
+    upload_month_artifacts(
+        storage,
+        args.month,
+        index_urls,
+        index_manifest,
+        matched_urls,
+        manifest,
+        shards_dir,
+        nppes_out,
+        bridge_out,
+        args.dry_run,
+    )
 
     if args.worker_command_template:
         for shard_num in range(1, args.shards + 1):
