@@ -11,7 +11,7 @@ use arrow::record_batch::RecordBatch;
 use chrono::{Datelike, Utc};
 use chrono_tz::America::Chicago;
 use clap::Parser;
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use parquet::arrow::ArrowWriter;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
@@ -871,7 +871,7 @@ fn open_reader(path: &Path) -> Result<Box<dyn Read>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let reader = BufReader::new(file);
     if path.extension().and_then(|value| value.to_str()).unwrap_or("").eq_ignore_ascii_case("gz") {
-        Ok(Box::new(GzDecoder::new(reader)))
+        Ok(Box::new(MultiGzDecoder::new(reader)))
     } else {
         Ok(Box::new(reader))
     }
