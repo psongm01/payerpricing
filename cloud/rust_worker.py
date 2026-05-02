@@ -37,6 +37,13 @@ def run(command: list[str]) -> None:
         raise RuntimeError(f"Command failed with exit code {completed.returncode}: {command[0]}")
 
 
+def validate_parquet(path: Path) -> int:
+    import pyarrow.parquet as pq
+
+    parquet_file = pq.ParquetFile(path)
+    return parquet_file.metadata.num_rows
+
+
 def upload_changed_outputs(
     storage: StorageClient,
     output_dir: Path,
@@ -51,6 +58,8 @@ def upload_changed_outputs(
             continue
         for path in dataset_dir.rglob("*.parquet"):
             if path.is_file() and path.stat().st_mtime >= started_at:
+                rows = validate_parquet(path)
+                log.info("Validated %s rows=%d", path, rows)
                 relative = path.relative_to(output_dir).as_posix()
                 storage.upload_file(path, f"parquet/{month}/{relative}", overwrite=True)
                 uploaded += 1
@@ -136,6 +145,9 @@ def main() -> None:
 
         for index, url in enumerate(urls, start=1):
             marker_key = f"{status_prefix}/{args.shard}/{file_key(url)}.done"
+            if storage.exists(marker_key):
+                log.info("[%d/%d] skipping completed URL: %s", index, len(urls), url.split("?")[0][:140])
+                continue
             log.info("[%d/%d] %s", index, len(urls), url.split("?")[0][:140])
             write_one_url_shard(url, one_url_shard_path)
             started_at = time.time()
@@ -165,6 +177,11 @@ def main() -> None:
             if args.dry_run:
                 log.info("[dry-run] would run: %s", " ".join(shlex.quote(part) for part in command))
             else:
+                storage.write_text(
+                    f"{status_prefix}/{args.shard}.heartbeat",
+                    f"running file {index}/{len(urls)} {time.ctime()}\n{url}\n",
+                    work_root,
+                )
                 run(command)
 
             uploaded = upload_changed_outputs(
@@ -174,8 +191,17 @@ def main() -> None:
                 started_at,
                 delete_after_upload=args.delete_local_parquet_after_upload,
             )
+            if not args.dry_run and uploaded != len(DATASET_DIRS):
+                raise RuntimeError(
+                    f"Expected {len(DATASET_DIRS)} parquet uploads for {url}, uploaded {uploaded}"
+                )
             log.info("[%d/%d] uploaded %d parquet file(s)", index, len(urls), uploaded)
             storage.write_text(marker_key, url + "\n", work_root)
+            storage.write_text(
+                f"{status_prefix}/{args.shard}.heartbeat",
+                f"completed file {index}/{len(urls)} {time.ctime()}\n{url}\n",
+                work_root,
+            )
 
         storage.write_text(f"{status_prefix}/{args.shard}.done", f"done {time.ctime()}\n", work_root)
     except Exception as exc:

@@ -76,6 +76,19 @@ class StorageClient:
             raise StorageError(f"Local path exists and overwrite is disabled: {local_path}")
         shutil.copy2(source_path, local_path)
 
+    def exists(self, key: str) -> bool:
+        if self.dry_run:
+            return False
+        if self.is_remote:
+            from azure.core.exceptions import ResourceNotFoundError
+
+            try:
+                self._container_client.get_blob_client(self._blob_name(key)).get_blob_properties()
+                return True
+            except ResourceNotFoundError:
+                return False
+        return Path(self.uri(key)).exists()
+
     def upload_prefix(self, local_dir: Path, key_prefix: str, overwrite: bool = True) -> None:
         if not local_dir.exists():
             log.info("Skipping missing upload directory: %s", local_dir)

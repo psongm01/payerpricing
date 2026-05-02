@@ -23,6 +23,12 @@ use uuid::Uuid;
 const BATCH_SIZE: usize = 10_000;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
+fn temp_parquet_path(path: &Path) -> PathBuf {
+    let mut temp = path.as_os_str().to_os_string();
+    temp.push(".tmp");
+    PathBuf::from(temp)
+}
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long, conflicts_with = "shard")]
@@ -312,12 +318,19 @@ struct ProviderWriter {
     ingested_at: StringBuilder,
     rows: usize,
     schema: Arc<Schema>,
+    final_path: PathBuf,
+    temp_path: PathBuf,
 }
 
 impl ProviderWriter {
     fn new(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        let temp_path = temp_parquet_path(path);
+        if temp_path.exists() {
+            std::fs::remove_file(&temp_path)
+                .with_context(|| format!("remove stale temp parquet {}", temp_path.display()))?;
         }
         let schema = Arc::new(Schema::new(vec![
             Field::new("source_pricing_file", DataType::Utf8, true),
@@ -334,7 +347,7 @@ impl ProviderWriter {
             Field::new("etl_run_id", DataType::Utf8, true),
             Field::new("ingested_at", DataType::Utf8, true),
         ]));
-        let file = File::create(path)?;
+        let file = File::create(&temp_path)?;
         let writer = ArrowWriter::try_new(file, schema.clone(), None)?;
         Ok(Self {
             writer,
@@ -353,6 +366,8 @@ impl ProviderWriter {
             ingested_at: StringBuilder::new(),
             rows: 0,
             schema,
+            final_path: path.to_path_buf(),
+            temp_path,
         })
     }
 
@@ -415,6 +430,17 @@ impl ProviderWriter {
     fn close(mut self) -> Result<()> {
         self.flush()?;
         self.writer.close()?;
+        if self.final_path.exists() {
+            std::fs::remove_file(&self.final_path)
+                .with_context(|| format!("remove existing parquet {}", self.final_path.display()))?;
+        }
+        std::fs::rename(&self.temp_path, &self.final_path).with_context(|| {
+            format!(
+                "rename completed parquet {} -> {}",
+                self.temp_path.display(),
+                self.final_path.display()
+            )
+        })?;
         Ok(())
     }
 }
@@ -460,12 +486,19 @@ struct PriceWriter {
     ingested_at: StringBuilder,
     rows: usize,
     schema: Arc<Schema>,
+    final_path: PathBuf,
+    temp_path: PathBuf,
 }
 
 impl PriceWriter {
     fn new(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+        let temp_path = temp_parquet_path(path);
+        if temp_path.exists() {
+            std::fs::remove_file(&temp_path)
+                .with_context(|| format!("remove stale temp parquet {}", temp_path.display()))?;
         }
         let schema = Arc::new(Schema::new(vec![
             Field::new("source_pricing_file", DataType::Utf8, true),
@@ -497,7 +530,7 @@ impl PriceWriter {
             Field::new("etl_run_id", DataType::Utf8, true),
             Field::new("ingested_at", DataType::Utf8, true),
         ]));
-        let file = File::create(path)?;
+        let file = File::create(&temp_path)?;
         let writer = ArrowWriter::try_new(file, schema.clone(), None)?;
         Ok(Self {
             writer,
@@ -531,6 +564,8 @@ impl PriceWriter {
             ingested_at: StringBuilder::new(),
             rows: 0,
             schema,
+            final_path: path.to_path_buf(),
+            temp_path,
         })
     }
 
@@ -627,6 +662,17 @@ impl PriceWriter {
     fn close(mut self) -> Result<()> {
         self.flush()?;
         self.writer.close()?;
+        if self.final_path.exists() {
+            std::fs::remove_file(&self.final_path)
+                .with_context(|| format!("remove existing parquet {}", self.final_path.display()))?;
+        }
+        std::fs::rename(&self.temp_path, &self.final_path).with_context(|| {
+            format!(
+                "rename completed parquet {} -> {}",
+                self.temp_path.display(),
+                self.final_path.display()
+            )
+        })?;
         Ok(())
     }
 }
