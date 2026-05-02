@@ -271,7 +271,8 @@ impl Progress {
             format!(" | {:.0} MB", mb_read)
         };
         eprintln!(
-            "elapsed={}s{} refs={} matched_groups={} in_network_items={} price_rows={}",
+            "time={} elapsed={}s{} refs={} matched_groups={} in_network_items={} price_rows={}",
+            central_ingested_at(),
             elapsed,
             progress,
             counts.refs_scanned,
