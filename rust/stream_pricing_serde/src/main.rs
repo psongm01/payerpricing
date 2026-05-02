@@ -66,13 +66,81 @@ struct Header {
     version: String,
 }
 
+fn de_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(value) => value,
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        other => other.to_string(),
+    })
+}
+
+fn de_string_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Array(values) => Ok(values
+            .into_iter()
+            .map(|value| match value {
+                serde_json::Value::Null => String::new(),
+                serde_json::Value::String(value) => value,
+                serde_json::Value::Number(value) => value.to_string(),
+                serde_json::Value::Bool(value) => value.to_string(),
+                other => other.to_string(),
+            })
+            .filter(|value| !value.is_empty())
+            .collect()),
+        serde_json::Value::String(value) => Ok(vec![value]),
+        serde_json::Value::Number(value) => Ok(vec![value.to_string()]),
+        other => Ok(vec![other.to_string()]),
+    }
+}
+
+fn de_i64_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .filter_map(|value| match value {
+                serde_json::Value::Number(value) => value.as_i64(),
+                serde_json::Value::String(value) => value.parse::<i64>().ok(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .pipe(Ok),
+        serde_json::Value::Number(value) => Ok(value.as_i64().into_iter().collect()),
+        serde_json::Value::String(value) => Ok(value.parse::<i64>().ok().into_iter().collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+
+impl<T> Pipe for T {}
+
 #[derive(Default, Deserialize)]
 struct Tin {
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "de_string")]
     tin_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     value: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     business_name: String,
 }
 
@@ -80,7 +148,7 @@ struct Tin {
 struct ProviderGroup {
     #[serde(default)]
     tin: Tin,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_vec")]
     npi: Vec<String>,
 }
 
@@ -88,7 +156,7 @@ struct ProviderGroup {
 struct ProviderReference {
     #[serde(default)]
     provider_group_id: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_vec")]
     network_name: Vec<String>,
     #[serde(default)]
     provider_groups: Vec<ProviderGroup>,
@@ -96,19 +164,19 @@ struct ProviderReference {
 
 #[derive(Default, Deserialize)]
 struct InNetworkItem {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     billing_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     billing_code_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     billing_code_type_version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     negotiation_arrangement: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     severity_of_illness: String,
     #[serde(default)]
     negotiated_rates: Vec<NegotiatedRate>,
@@ -116,7 +184,7 @@ struct InNetworkItem {
 
 #[derive(Default, Deserialize)]
 struct NegotiatedRate {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_i64_vec")]
     provider_references: Vec<i64>,
     #[serde(default)]
     negotiated_prices: Vec<NegotiatedPrice>,
@@ -124,23 +192,23 @@ struct NegotiatedRate {
 
 #[derive(Default, Deserialize)]
 struct NegotiatedPrice {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     negotiated_type: String,
     #[serde(default)]
     negotiated_rate: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     expiration_date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     billing_class: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_vec")]
     service_code: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_vec")]
     billing_code_modifier: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     additional_information: String,
     #[serde(default)]
     estimated_amount: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string")]
     setting: String,
 }
 
