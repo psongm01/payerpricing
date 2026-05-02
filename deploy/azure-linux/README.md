@@ -107,7 +107,7 @@ Run one shard per worker:
 set -a
 . ./.env.azure
 set +a
-bash deploy/azure-linux/run_worker.sh 2026-04 shard_01
+bash deploy/azure-linux/run_rust_worker.sh 2026-04 shard_01 --delete-local-parquet-after-upload
 ```
 
 Repeat with `shard_02` through `shard_10`, or have Azure Batch/VMSS pass the

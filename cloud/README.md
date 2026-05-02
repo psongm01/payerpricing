@@ -71,6 +71,20 @@ processes one pricing file at a time through `ingest/stream_pricing.py`. It
 uploads completed parquet files after each source file and writes status
 artifacts under `jobs/<month>/status/`.
 
+## Rust Worker
+
+Use the Rust worker as the primary high-throughput pricing path:
+
+```bash
+bash deploy/azure-linux/run_rust_worker.sh 2026-05 shard_01 --delete-local-parquet-after-upload
+```
+
+The Rust worker downloads the shard and NPPES parquet from ADLS, exports NPIs to
+a text file, runs `rust/stream_pricing_serde`, uploads completed `tic_price` and
+`tic_provider_reference` Parquet after each pricing file, and writes the same
+status markers as the Python worker. OON output is not implemented in the Rust
+path yet.
+
 Status markers are written under:
 
 ```text
