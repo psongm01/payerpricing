@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use arrow::array::{Float64Builder, Int64Builder, StringBuilder};
@@ -19,6 +21,7 @@ use serde_json::Deserializer;
 use uuid::Uuid;
 
 const BATCH_SIZE: usize = 10_000;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -225,6 +228,71 @@ struct Counts {
     price_rows: usize,
     refs_scanned: usize,
     items_scanned: usize,
+}
+
+struct Progress {
+    started_at: Instant,
+    last_log_at: Instant,
+    compressed_size: Option<u64>,
+    bytes_counter: Arc<AtomicU64>,
+}
+
+impl Progress {
+    fn new(compressed_size: Option<u64>, bytes_counter: Arc<AtomicU64>) -> Self {
+        let now = Instant::now();
+        Self {
+            started_at: now,
+            last_log_at: now,
+            compressed_size,
+            bytes_counter,
+        }
+    }
+
+    fn maybe_log(&mut self, counts: &Counts, matched_groups: usize) {
+        if self.last_log_at.elapsed() >= HEARTBEAT_INTERVAL {
+            self.log(counts, matched_groups);
+            self.last_log_at = Instant::now();
+        }
+    }
+
+    fn log(&self, counts: &Counts, matched_groups: usize) {
+        let elapsed = self.started_at.elapsed().as_secs();
+        let mb_read = self.bytes_counter.load(Ordering::Relaxed) as f64 / (1024.0 * 1024.0);
+        let progress = if let Some(size) = self.compressed_size {
+            let mb_total = size as f64 / (1024.0 * 1024.0);
+            format!(" | {:.0}/{:.0} MB", mb_read, mb_total)
+        } else {
+            format!(" | {:.0} MB", mb_read)
+        };
+        eprintln!(
+            "elapsed={}s{} refs={} matched_groups={} in_network_items={} price_rows={}",
+            elapsed,
+            progress,
+            counts.refs_scanned,
+            matched_groups,
+            counts.items_scanned,
+            counts.price_rows
+        );
+    }
+}
+
+struct CountingReader<R> {
+    inner: R,
+    counter: Arc<AtomicU64>,
+}
+
+impl<R> CountingReader<R> {
+    fn new(inner: R, counter: Arc<AtomicU64>) -> Self {
+        Self { inner, counter }
+    }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.counter.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
 }
 
 struct ProviderWriter {
@@ -584,6 +652,7 @@ struct RootSeed<'a> {
     price_writer: &'a mut PriceWriter,
     counts: &'a mut Counts,
     matched_group_ids: &'a mut HashSet<i64>,
+    progress: &'a mut Progress,
 }
 
 impl<'de, 'a> DeserializeSeed<'de> for RootSeed<'a> {
@@ -630,6 +699,7 @@ impl<'de, 'a> Visitor<'de> for RootVisitor<'a> {
                         writer: &mut *self.seed.provider_writer,
                         counts: &mut *self.seed.counts,
                         matched_group_ids: &mut *self.seed.matched_group_ids,
+                        progress: &mut *self.seed.progress,
                     };
                     map.next_value_seed(seed)?;
                 }
@@ -640,6 +710,7 @@ impl<'de, 'a> Visitor<'de> for RootVisitor<'a> {
                         writer: &mut *self.seed.price_writer,
                         counts: &mut *self.seed.counts,
                         matched_group_ids: &*self.seed.matched_group_ids,
+                        progress: &mut *self.seed.progress,
                     };
                     map.next_value_seed(seed)?;
                 }
@@ -657,6 +728,7 @@ struct ProviderRefsSeed<'a> {
     writer: &'a mut ProviderWriter,
     counts: &'a mut Counts,
     matched_group_ids: &'a mut HashSet<i64>,
+    progress: &'a mut Progress,
 }
 
 impl<'de, 'a> DeserializeSeed<'de> for ProviderRefsSeed<'a> {
@@ -691,12 +763,7 @@ impl<'de, 'a> Visitor<'de> for ProviderRefsVisitor<'a> {
                 .map_err(de::Error::custom)
                 .map(|rows| self.seed.counts.provider_rows += rows)?;
             if self.seed.counts.refs_scanned % 5000 == 0 {
-                eprintln!(
-                    "provider refs={} provider_rows={} matched_groups={}",
-                    self.seed.counts.refs_scanned,
-                    self.seed.counts.provider_rows,
-                    self.seed.matched_group_ids.len()
-                );
+                self.seed.progress.maybe_log(self.seed.counts, self.seed.matched_group_ids.len());
             }
         }
         Ok(())
@@ -785,6 +852,7 @@ struct InNetworkSeed<'a> {
     writer: &'a mut PriceWriter,
     counts: &'a mut Counts,
     matched_group_ids: &'a HashSet<i64>,
+    progress: &'a mut Progress,
 }
 
 impl<'de, 'a> DeserializeSeed<'de> for InNetworkSeed<'a> {
@@ -825,11 +893,7 @@ impl<'de, 'a> Visitor<'de> for InNetworkVisitor<'a> {
             .map_err(de::Error::custom)
             .map(|rows| self.seed.counts.price_rows += rows)?;
             if self.seed.counts.items_scanned % 2000 == 0 {
-                eprintln!(
-                    "in_network_items={} price_rows={}",
-                    self.seed.counts.items_scanned,
-                    self.seed.counts.price_rows
-                );
+                self.seed.progress.maybe_log(self.seed.counts, self.seed.matched_group_ids.len());
             }
         }
         Ok(())
@@ -935,13 +999,16 @@ fn download_url(url: &str, download_dir: &Path) -> Result<PathBuf> {
     Ok(destination)
 }
 
-fn open_reader(path: &Path) -> Result<Box<dyn Read>> {
+fn open_reader(path: &Path) -> Result<(Box<dyn Read>, Option<u64>, Arc<AtomicU64>)> {
+    let compressed_size = path.metadata().ok().map(|metadata| metadata.len());
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let reader = BufReader::new(file);
+    let counter = Arc::new(AtomicU64::new(0));
+    let counted_file = CountingReader::new(file, counter.clone());
+    let reader = BufReader::new(counted_file);
     if path.extension().and_then(|value| value.to_str()).unwrap_or("").eq_ignore_ascii_case("gz") {
-        Ok(Box::new(MultiGzDecoder::new(reader)))
+        Ok((Box::new(MultiGzDecoder::new(reader)), compressed_size, counter))
     } else {
-        Ok(Box::new(reader))
+        Ok((Box::new(reader), compressed_size, counter))
     }
 }
 
@@ -989,7 +1056,8 @@ fn process_file(
     let mut counts = Counts::default();
     let mut matched_group_ids = HashSet::new();
 
-    let reader = open_reader(file)?;
+    let (reader, compressed_size, bytes_counter) = open_reader(file)?;
+    let mut progress = Progress::new(compressed_size, bytes_counter);
     let mut deserializer = Deserializer::from_reader(reader);
     let header = RootSeed {
         ctx: &mut ctx,
@@ -997,8 +1065,11 @@ fn process_file(
         price_writer: &mut price_writer,
         counts: &mut counts,
         matched_group_ids: &mut matched_group_ids,
+        progress: &mut progress,
     }
     .deserialize(&mut deserializer)?;
+
+    progress.log(&counts, matched_group_ids.len());
 
     provider_writer.close()?;
     price_writer.close()?;
