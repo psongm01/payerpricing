@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,10 +22,16 @@ const BATCH_SIZE: usize = 10_000;
 
 #[derive(Parser, Debug)]
 struct Args {
+    #[arg(long, conflicts_with = "shard")]
+    file: Option<PathBuf>,
+    #[arg(long, requires = "file")]
+    source_url: Option<String>,
+    #[arg(long, conflicts_with = "file")]
+    shard: Option<PathBuf>,
+    #[arg(long, default_value = "data/raw/pricing_staging")]
+    download_dir: PathBuf,
     #[arg(long)]
-    file: PathBuf,
-    #[arg(long)]
-    source_url: String,
+    keep_downloaded: bool,
     #[arg(long, default_value = "data/parquet")]
     output: PathBuf,
     #[arg(long)]
@@ -807,6 +813,60 @@ fn source_name_from_url(url: &str) -> String {
         .collect()
 }
 
+fn parse_shard_url(line: &str) -> Option<String> {
+    let url = line.trim().split('|').next()?.trim();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
+}
+
+fn read_shard_urls(path: &Path) -> Result<Vec<String>> {
+    let file = File::open(path).with_context(|| format!("open shard {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut urls = Vec::new();
+    for line in reader.lines() {
+        if let Some(url) = parse_shard_url(&line?) {
+            urls.push(url);
+        }
+    }
+    Ok(urls)
+}
+
+fn download_url(url: &str, download_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(download_dir)?;
+    let source_name = source_name_from_url(url);
+    let path_without_query = url.split('?').next().unwrap_or(url);
+    let suffix = if path_without_query.ends_with(".json.gz") {
+        ".json.gz"
+    } else if path_without_query.ends_with(".gz") {
+        ".gz"
+    } else {
+        ".json"
+    };
+    let destination = download_dir.join(format!("{source_name}{suffix}"));
+    let partial = download_dir.join(format!("{source_name}.partial"));
+    if destination.exists() {
+        eprintln!("reusing staged download {}", destination.display());
+        return Ok(destination);
+    }
+
+    eprintln!("downloading {}", url.split('?').next().unwrap_or(url));
+    let mut response = reqwest::blocking::Client::new()
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0")
+        .header("Accept", "application/json, */*")
+        .send()?
+        .error_for_status()?;
+    let mut file = File::create(&partial)?;
+    let bytes = response.copy_to(&mut file)?;
+    file.flush()?;
+    std::fs::rename(&partial, &destination)?;
+    eprintln!("downloaded {} bytes to {}", bytes, destination.display());
+    Ok(destination)
+}
+
 fn open_reader(path: &Path) -> Result<Box<dyn Read>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let reader = BufReader::new(file);
@@ -840,24 +900,20 @@ fn central_ingested_at() -> String {
     Utc::now().with_timezone(&Chicago).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let source_name = source_name_from_url(&args.source_url);
-    let provider_path = args.output.join("tic_provider_reference").join(format!("{source_name}.parquet"));
-    let price_path = args.output.join("tic_price").join(format!("{source_name}.parquet"));
-
-    let lineage = Lineage {
-        payer_code: args.payer_code,
-        file_month: args.file_month.unwrap_or_else(default_file_month),
-        state: args.state,
-        source_version: args.source_version,
-        etl_run_id: args.etl_run_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-        ingested_at: central_ingested_at(),
-    };
+fn process_file(
+    file: &Path,
+    source_url: &str,
+    output: &Path,
+    target_npis: Option<HashSet<String>>,
+    lineage: Lineage,
+) -> Result<()> {
+    let source_name = source_name_from_url(source_url);
+    let provider_path = output.join("tic_provider_reference").join(format!("{source_name}.parquet"));
+    let price_path = output.join("tic_price").join(format!("{source_name}.parquet"));
     let mut ctx = ContextState {
-        source_url: args.source_url,
+        source_url: source_url.to_string(),
         lineage,
-        target_npis: load_target_npis(args.target_npis_file.as_deref())?,
+        target_npis,
     };
 
     let mut provider_writer = ProviderWriter::new(&provider_path)?;
@@ -865,7 +921,7 @@ fn main() -> Result<()> {
     let mut counts = Counts::default();
     let mut matched_group_ids = HashSet::new();
 
-    let reader = open_reader(&args.file)?;
+    let reader = open_reader(file)?;
     let mut deserializer = Deserializer::from_reader(reader);
     let header = RootSeed {
         ctx: &mut ctx,
@@ -888,5 +944,43 @@ fn main() -> Result<()> {
         counts.price_rows,
         if ctx.lineage.source_version.is_empty() { header.version } else { ctx.lineage.source_version }
     );
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    if args.file.is_none() && args.shard.is_none() {
+        anyhow::bail!("Provide either --file with --source-url or --shard");
+    }
+
+    let target_npis = load_target_npis(args.target_npis_file.as_deref())?;
+    let lineage = Lineage {
+        payer_code: args.payer_code,
+        file_month: args.file_month.unwrap_or_else(default_file_month),
+        state: args.state,
+        source_version: args.source_version,
+        etl_run_id: args.etl_run_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+        ingested_at: central_ingested_at(),
+    };
+
+    if let Some(file) = args.file.as_deref() {
+        let source_url = args.source_url.as_deref().context("--source-url is required with --file")?;
+        process_file(file, source_url, &args.output, target_npis, lineage)?;
+        return Ok(());
+    }
+
+    let shard = args.shard.as_deref().expect("checked above");
+    let urls = read_shard_urls(shard)?;
+    eprintln!("processing {} URL(s) from shard {}", urls.len(), shard.display());
+    for (index, url) in urls.iter().enumerate() {
+        eprintln!("[{}/{}] {}", index + 1, urls.len(), url.split('?').next().unwrap_or(url));
+        let local_file = download_url(url, &args.download_dir)?;
+        process_file(&local_file, url, &args.output, target_npis.clone(), lineage.clone())?;
+        if !args.keep_downloaded {
+            if let Err(error) = std::fs::remove_file(&local_file) {
+                eprintln!("warning: could not delete {}: {}", local_file.display(), error);
+            }
+        }
+    }
     Ok(())
 }

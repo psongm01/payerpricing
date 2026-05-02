@@ -32,6 +32,24 @@ cargo build --release
 `--source-url` is the value written to `source_pricing_file`; the local path is
 only used for reading bytes.
 
+## Run Like A Worker Shard
+
+Pass a shard text file with one URL per line, or coordinator-style
+`url|size_bytes|signal|name` rows. The tool downloads one URL at a time, parses
+it, writes staging Parquet, then deletes the staged raw file unless
+`--keep-downloaded` is set.
+
+```bash
+./target/release/stream_pricing_serde \
+  --shard /home/azureuser/tic-refresh-work/2026-05/shard_01/shard_01.txt \
+  --download-dir /home/azureuser/tic-refresh-work/2026-05/shard_01/pricing_staging \
+  --target-npis-file /home/azureuser/PriceTransparency_Linux/data/monthly/2026-05/raw/target_npis.txt \
+  --output /home/azureuser/tic-refresh-work/2026-05/shard_01/rust_parquet \
+  --payer-code UHC \
+  --file-month 2026-05 \
+  --state TX
+```
+
 ## Optional NPI Filter
 
 For filtered extraction, pass a plain text file with one NPI per line:
