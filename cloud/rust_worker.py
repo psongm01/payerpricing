@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from cloud.storage import StorageClient
@@ -22,8 +23,19 @@ DATASET_DIRS = (
 )
 
 
-def parse_url(line: str) -> str:
-    return line.rstrip("\n").split("|", 1)[0].strip()
+@dataclass(frozen=True)
+class ShardEntry:
+    url: str
+    payer_code: str | None = None
+
+
+def parse_shard_entry(line: str) -> ShardEntry | None:
+    parts = line.rstrip("\n").split("|")
+    url = parts[0].strip() if parts else ""
+    if not url:
+        return None
+    payer_code = parts[4].strip() if len(parts) >= 5 and parts[4].strip() else None
+    return ShardEntry(url=url, payer_code=payer_code)
 
 
 def file_key(url: str) -> str:
@@ -137,18 +149,24 @@ def main() -> None:
                 ]
             )
 
-        urls = [parse_url(line) for line in shard_path.read_text(encoding="utf-8").splitlines()]
-        urls = [url for url in urls if url]
+        entries = [
+            entry
+            for line in shard_path.read_text(encoding="utf-8").splitlines()
+            for entry in [parse_shard_entry(line)]
+            if entry is not None
+        ]
         if args.limit_files is not None:
-            urls = urls[: args.limit_files]
-        log.info("Processing %d URL(s) from %s", len(urls), args.shard)
+            entries = entries[: args.limit_files]
+        log.info("Processing %d URL(s) from %s", len(entries), args.shard)
 
-        for index, url in enumerate(urls, start=1):
+        for index, entry in enumerate(entries, start=1):
+            url = entry.url
+            payer_code = entry.payer_code or args.payer_code
             marker_key = f"{status_prefix}/{args.shard}/{file_key(url)}.done"
             if storage.exists(marker_key):
-                log.info("[%d/%d] skipping completed URL: %s", index, len(urls), url.split("?")[0][:140])
+                log.info("[%d/%d] skipping completed URL: %s", index, len(entries), url.split("?")[0][:140])
                 continue
-            log.info("[%d/%d] %s", index, len(urls), url.split("?")[0][:140])
+            log.info("[%d/%d] payer=%s %s", index, len(entries), payer_code, url.split("?")[0][:140])
             write_one_url_shard(url, one_url_shard_path)
             started_at = time.time()
 
@@ -163,7 +181,7 @@ def main() -> None:
                 "--output",
                 str(output_dir),
                 "--payer-code",
-                args.payer_code,
+                payer_code,
                 "--file-month",
                 args.month,
                 "--state",
@@ -179,7 +197,7 @@ def main() -> None:
             else:
                 storage.write_text(
                     f"{status_prefix}/{args.shard}.heartbeat",
-                    f"running file {index}/{len(urls)} {time.ctime()}\n{url}\n",
+                    f"running file {index}/{len(entries)} payer={payer_code} {time.ctime()}\n{url}\n",
                     work_root,
                 )
                 run(command)
@@ -195,11 +213,11 @@ def main() -> None:
                 raise RuntimeError(
                     f"Expected {len(DATASET_DIRS)} parquet uploads for {url}, uploaded {uploaded}"
                 )
-            log.info("[%d/%d] uploaded %d parquet file(s)", index, len(urls), uploaded)
+            log.info("[%d/%d] uploaded %d parquet file(s)", index, len(entries), uploaded)
             storage.write_text(marker_key, url + "\n", work_root)
             storage.write_text(
                 f"{status_prefix}/{args.shard}.heartbeat",
-                f"completed file {index}/{len(urls)} {time.ctime()}\n{url}\n",
+                f"completed file {index}/{len(entries)} payer={payer_code} {time.ctime()}\n{url}\n",
                 work_root,
             )
 

@@ -1,6 +1,6 @@
 # Linux / Azure Monthly Refresh
 
-These entrypoints wrap the existing ingestion scripts for the monthly UHC/UMR
+These entrypoints wrap the existing ingestion scripts for the monthly payer
 Texas batch flow. They do not replace the validated streaming extraction logic.
 
 ## Install on Linux
@@ -27,6 +27,7 @@ Shard files preserve the manifest line format:
 
 ```text
 url|size_bytes|signal|reporting_entity_name
+url|size_bytes|signal|reporting_entity_name|payer_code
 ```
 
 ## Coordinator
@@ -34,22 +35,47 @@ url|size_bytes|signal|reporting_entity_name
 ```bash
 python3 -m cloud.coordinator \
   --month 2026-04 \
-  --storage-root "https://sttic.blob.core.windows.net/tic-refresh"
+  --storage-root "https://sttic.blob.core.windows.net/tic-refresh" \
+  --payers uhc
 ```
 
 The coordinator:
 
-- discovers UHC index URLs from the public MRF blob listing
-- builds `plan_pricing_bridge.parquet` from those index files
+- discovers selected payer index URLs
+- builds payer-specific `plan_pricing_bridge.parquet` files from those index files
 - writes Texas NPPES parquet under `data/monthly/<month>/parquet/nppes_provider`
-- scans UHC/UMR Texas-eligible URLs into `matched_pricing_urls.txt`
-- builds 10 byte-balanced shard files
+- scans Texas-NPI-matched pricing URLs into payer manifests
+- combines payer manifests into `matched_pricing_urls_manifest.txt`
+- builds 10 byte-balanced shard files from the combined manifest
 - uploads job artifacts under `jobs/<month>/`
 - uploads NPPES provider parquet under `parquet/<month>/nppes_provider`
 
 Set `TIC_UHC_MRF_SEED_URL` to any signed UHC public-MRF blob URL. The
 coordinator uses its SAS query to list `YYYY-MM-01/` and filters blob names
 containing `index`.
+
+Run multiple payers by selecting them explicitly:
+
+```bash
+python3 -m cloud.coordinator \
+  --month 2026-04 \
+  --storage-root "https://sttic.blob.core.windows.net/tic-refresh" \
+  --payers uhc bcbstx cigna aetna \
+  --bcbstx-index-url "https://app0004702110a5prdnc868.blob.core.windows.net/toc/2026-04-21_Blue-Cross-and-Blue-Shield-of-Texas_index.json" \
+  --cigna-index-url "$TIC_CIGNA_INDEX_URL" \
+  --aetna-insurer-code AETNACVS_I \
+  --aetna-brand-code ALICSI
+```
+
+If UHC already ran and you only want the remaining payer manifests included in
+this month's Azure folder, run:
+
+```bash
+python3 -m cloud.coordinator \
+  --month 2026-04 \
+  --storage-root "https://sttic.blob.core.windows.net/tic-refresh" \
+  --payers bcbstx cigna aetna
+```
 
 Use `--worker-command-template` if the coordinator environment can start worker
 VM jobs directly.
@@ -84,6 +110,10 @@ a text file, runs `rust/stream_pricing_serde`, uploads completed `tic_price` and
 `tic_provider_reference` Parquet after each pricing file, and writes the same
 status markers as the Python worker. OON output is not implemented in the Rust
 path yet.
+
+When a shard row has the fifth `payer_code` column, `cloud.rust_worker` passes
+that payer code to the Rust binary for that URL. Older four-column UHC-only
+shards still work and fall back to the worker's `--payer-code` argument.
 
 Status markers are written under:
 

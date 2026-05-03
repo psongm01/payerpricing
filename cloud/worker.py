@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from cloud.storage import StorageClient
@@ -24,8 +25,19 @@ DATASET_DIRS = (
 )
 
 
-def parse_url(line: str) -> str:
-    return line.rstrip("\n").split("|", 1)[0].strip()
+@dataclass(frozen=True)
+class ShardEntry:
+    url: str
+    payer_code: str | None = None
+
+
+def parse_shard_entry(line: str) -> ShardEntry | None:
+    parts = line.rstrip("\n").split("|")
+    url = parts[0].strip() if parts else ""
+    if not url:
+        return None
+    payer_code = parts[4].strip() if len(parts) >= 5 and parts[4].strip() else None
+    return ShardEntry(url=url, payer_code=payer_code)
 
 
 def file_key(url: str) -> str:
@@ -100,13 +112,19 @@ def main() -> None:
         if not args.full_extract:
             storage.download_prefix(f"parquet/{args.month}/nppes_provider", nppes_dir)
 
-        urls = [parse_url(line) for line in shard_path.read_text(encoding="utf-8").splitlines()]
-        urls = [url for url in urls if url]
-        log.info("Processing %d URL(s) from %s", len(urls), args.shard)
+        entries = [
+            entry
+            for line in shard_path.read_text(encoding="utf-8").splitlines()
+            for entry in [parse_shard_entry(line)]
+            if entry is not None
+        ]
+        log.info("Processing %d URL(s) from %s", len(entries), args.shard)
 
-        for index, url in enumerate(urls, start=1):
+        for index, entry in enumerate(entries, start=1):
+            url = entry.url
+            payer_code = entry.payer_code or args.payer_code
             marker_key = f"{status_prefix}/{args.shard}/{file_key(url)}.done"
-            log.info("[%d/%d] %s", index, len(urls), url[:120])
+            log.info("[%d/%d] payer=%s %s", index, len(entries), payer_code, url[:120])
             one_url_path.write_text(url + "\n", encoding="utf-8")
             started_at = time.time()
             command = [
@@ -122,7 +140,7 @@ def main() -> None:
                 "1",
                 "--delete-downloaded",
                 "--payer-code",
-                args.payer_code,
+                payer_code,
                 "--file-month",
                 args.month,
                 "--state",

@@ -42,9 +42,10 @@ data/raw/taxonomy/nucc_taxonomy.csv
 ```
 
 These can be copied to the coordinator VM, mounted from storage, or produced by
-an earlier step. The coordinator now discovers UHC index URLs and builds
-`plan_pricing_bridge.parquet` automatically when `TIC_UHC_MRF_SEED_URL` is set.
-Workers do not need these source inputs preloaded.
+an earlier step. The coordinator discovers selected payer index URLs and builds
+payer-specific `plan_pricing_bridge.parquet` files automatically when the
+corresponding payer config is set. Workers do not need these source inputs
+preloaded.
 
 ## Do I Create Folders Manually?
 
@@ -99,6 +100,22 @@ set +a
 bash deploy/azure-linux/run_coordinator.sh 2026-04
 ```
 
+Run selected payers with `TIC_PAYERS` or `--payers`:
+
+```bash
+TIC_PAYERS="bcbstx cigna aetna" bash deploy/azure-linux/run_coordinator.sh 2026-04
+
+bash deploy/azure-linux/run_coordinator.sh 2026-04 --payers uhc bcbstx cigna aetna
+```
+
+The `YYYY-MM` argument is the Azure month partition. For `2026-04`, coordinator
+artifacts upload under:
+
+```text
+jobs/2026-04/
+parquet/2026-04/
+```
+
 ## Run Workers
 
 Run one shard per worker:
@@ -112,6 +129,10 @@ bash deploy/azure-linux/run_rust_worker.sh 2026-04 shard_01 --delete-local-parqu
 
 Repeat with `shard_02` through `shard_10`, or have Azure Batch/VMSS pass the
 shard id to each worker.
+
+Use `run_rust_worker.sh` as the production/high-throughput worker. The
+coordinator prepares manifests and shards; workers, not the coordinator, run the
+Rust pricing parser.
 
 ## Local Dry Run
 
