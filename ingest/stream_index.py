@@ -138,7 +138,6 @@ def _stream_rows(data: bytes, meta: dict, source_name: str, lineage: dict[str, s
                         "plan_id": plan.get("plan_id"),
                         "plan_id_type": plan.get("plan_id_type"),
                         "plan_market_type": plan.get("plan_market_type"),
-                        "plan_sponsor_name": plan_sponsor_name,
                         "plan_sponser_name": plan_sponsor_name,
                         "issuer_name": plan.get("issuer_name"),
                         "description": nf.get("description"),

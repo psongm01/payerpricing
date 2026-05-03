@@ -22,7 +22,6 @@ PLAN_PRICING_BRIDGE_SCHEMA = pa.schema(
         pa.field("plan_id", pa.string()),
         pa.field("plan_id_type", pa.string()),
         pa.field("plan_market_type", pa.string()),
-        pa.field("plan_sponsor_name", pa.string()),
         pa.field("plan_sponser_name", pa.string()),
         pa.field("issuer_name", pa.string()),
         pa.field("description", pa.string()),
