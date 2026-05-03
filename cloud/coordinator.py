@@ -222,7 +222,7 @@ def run_discovery(args, repo_root: Path, paths: PayerPaths) -> None:
                 "--aetna-brand-code",
                 args.aetna_brand_code,
                 "--aetna-file-month",
-                args.month,
+                args.aetna_file_month or args.month,
             ]
         )
         if args.aetna_insecure:
@@ -349,6 +349,14 @@ def main() -> None:
         "--aetna-brand-code",
         default=os.getenv("TIC_AETNA_BRAND_CODE", "ALICSI"),
         help="Aetna/HealthSparq brand code. Default: ALICSI.",
+    )
+    parser.add_argument(
+        "--aetna-file-month",
+        default=os.getenv("TIC_AETNA_FILE_MONTH"),
+        help=(
+            "Optional Aetna source catalog month as YYYY-MM. Defaults to --month. "
+            "Use this when Aetna has not published the current month yet."
+        ),
     )
     parser.add_argument(
         "--aetna-insecure",
