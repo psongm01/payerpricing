@@ -72,6 +72,10 @@ def _with_lineage(row: dict, lineage: dict[str, str]) -> dict:
     return row
 
 
+def _plan_sponsor_name(plan: dict) -> str | None:
+    return plan.get("plan_sponsor_name") or plan.get("plan_sponser_name")
+
+
 def _filename_from_url(url: str) -> str:
     return Path(unquote(urlparse(url).path)).name
 
@@ -124,6 +128,7 @@ def _stream_rows(data: bytes, meta: dict, source_name: str, lineage: dict[str, s
                 location = nf.get("location")
                 if not location:
                     continue
+                plan_sponsor_name = _plan_sponsor_name(plan)
                 yield _with_lineage(
                     {
                         "reporting_entity_name": entity_name,
@@ -133,7 +138,8 @@ def _stream_rows(data: bytes, meta: dict, source_name: str, lineage: dict[str, s
                         "plan_id": plan.get("plan_id"),
                         "plan_id_type": plan.get("plan_id_type"),
                         "plan_market_type": plan.get("plan_market_type"),
-                        "plan_sponser_name": plan.get("plan_sponser_name"),
+                        "plan_sponsor_name": plan_sponsor_name,
+                        "plan_sponser_name": plan_sponsor_name,
                         "issuer_name": plan.get("issuer_name"),
                         "description": nf.get("description"),
                         "location": location,
